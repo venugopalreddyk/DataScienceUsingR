@@ -1,0 +1,221 @@
+##### INstall Packages #####
+install.packages("readr")
+install.packages("xgboost")
+install.packages("MASS")
+install.packages("shiny")
+#install.packages("tools")
+install.packages("lattice")
+install.packages("ggplot2")
+install.packages("shinyFiles")
+install.packages("base")
+install.packages("RODBC")
+install.packages("DT")
+install.packages("shinydashboard")
+
+#Calling libraries
+install.packages("readr")
+install.packages("chron")
+# install.packages("xgboost")
+install.packages("RJDBC")
+install.packages("XLConnect")
+install.packages("lubridate")
+install.packages("Hmisc")
+install.packages("timeDate")
+install.packages("gdata")
+install.packages("openxlsx")
+install.packages("RSQLite")
+install.packages("sqldf")
+install.packages("neuralnet")
+install.packages("randomForest")
+
+
+
+##### Load Data #####
+rm(list=ls())
+setwd("C:\\Users\\venugopalak\\Desktop\\NO_SQl\\R Use Case")
+
+gc()
+# error2 MEAPR 34.81
+set<-c(32,49,77,96,108,119,136,153,165,175,186,197,209,219,229,239,249,259,269,279,289,299,311,321,331,341,351,361,371,381,391,402,424,434,444,454,464,474,484,494,507,517,527,537,547,557,569,583,593,604,614,625,638,648,659,671,682,692,702,712,732,742,753,763,774,784,798,960,974,994,1017,1027,1037,1048,1058,1069,1081,1093,1106,1118,1130,1141,1152,1163,1174,1184,1194,1229,1240,1250,1267,1280,1291,1305,1316,1328,1360,1370,1380,1390,1403,1415,1439,1453,1466,1484,1502)
+
+#df <- read.table("C:\\Users\\venugopalak\\Desktop\\NO_SQl\\R Use Case\\store8,9data.csv",header = TRUE,sep=",");
+Da <- read.table("C:\\Users\\venugopalak\\Desktop\\NO_SQl\\R Use Case\\full_data.txt",header = TRUE,sep=",");
+Fcstmth_FM_ID <- "201705"
+data<-Da
+df<-data[which(data$STORE %in% set),]
+df$REGN_ID <- NULL
+df$ST_CDE <- NULL
+
+# df <- read.table("C:\\Users\\venugopalak\\Desktop\\NO_SQl\\R Use Case\\full_data.txt",header = TRUE,sep=",");
+#df <- sample_n(df, 50000)
+
+##### Load R Packages ####
+
+
+library(readr)
+library(xgboost)
+library(MASS)
+library(shiny)
+library(tools)
+library(lattice)
+library(ggplot2)
+library(shinyFiles)
+library(base)
+library(RODBC)
+library(DT)
+library(shinydashboard)
+
+#Calling libraries
+library(readr)
+library(chron)
+# library(xgboost)
+library(RJDBC)
+library(XLConnect)
+library(lubridate)
+library(Hmisc)
+library(timeDate)
+library(gdata)
+library(openxlsx)
+library(RSQLite)
+library(sqldf)
+require(dplyr)
+require(randomForest)
+
+##### Convertng Char to Numeric #####
+
+df$Holiday_Comb = as.numeric(df$Holiday_Comb)
+df$Tavg_cat = as.numeric(df$Tavg_cat)
+df$Prcp_Total_cat = as.numeric(df$Prcp_Total_cat)
+#df$Snow_cat_1 = as.numeric(df$Snow_cat_1)
+df$SEA_DESC = as.numeric(df$SEA_DESC)
+df$TOT_STR_SQ_FTG_QTY = as.numeric(df$TOT_STR_SQ_FTG_QTY)
+df$STR_FMT_CDE = as.numeric(df$STR_FMT_CDE)
+df$ST_CDE = as.numeric(df$ST_CDE)
+
+##### Data Partetion ####
+
+# apply(df,2,function(x) sum(is.na(x)))
+
+
+
+
+Data <- sqldf("SELECT * FROM df where Productivity is NOT NULL")
+cvData <- sqldf("SELECT * FROM df where Productivity is NULL; ")
+cvData<- cvData[order(cvData$STORE,cvData$Year,cvData$Month_NM,cvData$Day_in_Month), ]
+
+
+test  <- sqldf("SELECT * FROM Data where  FSCL_MN_ID > 201703")
+
+train <- sqldf("SELECT * FROM Data where  FSCL_MN_ID <= 201703" )
+
+
+rm(Data)
+
+train <- train %>%
+  mutate(Prcp_Total_cat= ifelse(is.na(Prcp_Total_cat),tail(names(sort(table(train$Prcp_Total_cat))), 1),Prcp_Total_cat))
+
+train <- train %>%
+  mutate(Tavg_cat = ifelse(is.na(Tavg_cat),tail(names(sort(table(train$Tavg_cat))), 1),Tavg_cat))
+
+train <- train %>%
+  mutate(Productivity = ifelse(is.na(Productivity),tail(names(sort(table(train$Productivity))), 1),Productivity))
+
+
+test <- test %>%
+  mutate(Prcp_Total_cat= ifelse(is.na(Prcp_Total_cat),tail(names(sort(table(test$Prcp_Total_cat))), 1),Prcp_Total_cat))
+
+test <- test %>%
+  mutate(Tavg_cat = ifelse(is.na(Tavg_cat),tail(names(sort(table(test$Tavg_cat))), 1),Tavg_cat))
+
+
+test <- test %>%
+  mutate(Productivity = ifelse(is.na(Productivity),tail(names(sort(table(test$Productivity))), 1),Productivity))
+
+##### Feature selection for Algorithm #####
+
+
+    # selecting variables for Jan to Oct if forecasting is from Jan to Oct
+    train<-train[,names(train) %in% c("Productivity",  "KC_Earn_Event",  "KC_Redeem_Event",  "LTO_Event",  "Friends_Family_Event",
+                                      "Associate_Event",  "Secret_Sale_Event",  "MVC_Event",  "KC_CASP_Event",  "BC_CASP_Event",  "BC_BMSM_Event",
+                                      "GPO_Dol_OFF_Event",	"GPO_PCT_OFF_Event",	"Digital_Event",	"Email_Event",	"PCT_15",	"PCT_20",
+                                      "Dol_15",	"DOW",	"Weekend",	"Week_in_Month",	"Sig_week_in_Month",
+                                      "Week_NM",	"Month_NM",	"Day_in_Month",	"No_Days_in_Month",	"Year",	"Day_in_year",
+                                      "Holiday_Comb",	"Tavg_cat",	"Prcp_Total_cat",	"SEA_DESC",	"LOYAL_PER",
+                                      		"DIST_ID" #,	"REGN_ID",	"ST_CDE"
+                                      ,"Mobile_Event","KC_Earn_Discount","KC_Redeem_Discount","PCT_25","PCT_30","Associate_Discount",
+                                      "Secret_Sale_Discount","MVC_Discount","Dol_10","Mystery_Discount","Post_XMAS","Pre_XMAS",
+                                      "Post_Blck_Fri_Dec","CYBR_2_WEK","Cyber_Mon","Post_Blck_Fri_Nov","blk_Friday","Pre_thnks",
+                                      "VTRN_DAY","Pre_VTRN","Post_VTRN","CYBR_NOV","CYBR_DEC"
+    )]
+    #train<- train[order(train$STORE,train$Year,train$Month_NM,train$Day_in_Month), ]
+    
+    test<-test[,names(test) %in% c(	"Productivity",	"KC_Earn_Event",	"KC_Redeem_Event",	"LTO_Event",	"Friends_Family_Event",
+                                   "Associate_Event",	"Secret_Sale_Event",	"MVC_Event",	"KC_CASP_Event",	"BC_CASP_Event",	"BC_BMSM_Event",
+                                   "GPO_Dol_OFF_Event",	"GPO_PCT_OFF_Event",	"Digital_Event",	"Email_Event",	"PCT_15",	"PCT_20",
+                                   "Dol_15",	"DOW",	"Weekend",	"Week_in_Month",	"Sig_week_in_Month",
+                                   "Week_NM",	"Month_NM",	"Day_in_Month",	"No_Days_in_Month",	"Year",	"Day_in_year",
+                                   "Holiday_Comb",	"Tavg_cat",	"Prcp_Total_cat",	"SEA_DESC",	"LOYAL_PER",
+                                   		"DIST_ID" #,	"REGN_ID",	"ST_CDE"
+                                   ,"Mobile_Event","KC_Earn_Discount","KC_Redeem_Discount","PCT_25","PCT_30","Associate_Discount",
+                                   "Secret_Sale_Discount","MVC_Discount","Dol_10","Mystery_Discount","Post_XMAS","Pre_XMAS",
+                                   "Post_Blck_Fri_Dec","CYBR_2_WEK","Cyber_Mon","Post_Blck_Fri_Nov","blk_Friday","Pre_thnks",
+                                   "VTRN_DAY","Pre_VTRN","Post_VTRN","CYBR_NOV","CYBR_DEC"
+    )]
+    #test<- test[order(test$STORE,test$Year,test$Month_NM,test$Day_in_Month), ]
+    cvData<-cvData[,names(cvData) %in% c( "Productivity",	"KC_Earn_Event",	"KC_Redeem_Event",	"LTO_Event",	"Friends_Family_Event",
+                                   "Associate_Event",	"Secret_Sale_Event",	"MVC_Event",	"KC_CASP_Event",	"BC_CASP_Event",	"BC_BMSM_Event",
+                                   "GPO_Dol_OFF_Event",	"GPO_PCT_OFF_Event",	"Digital_Event",	"Email_Event",	"PCT_15",	"PCT_20",
+                                   "Dol_15",	"DOW",	"Weekend",	"Week_in_Month",	"Sig_week_in_Month",
+                                   "Week_NM",	"Month_NM",	"Day_in_Month",	"No_Days_in_Month",	"Year",	"Day_in_year",
+                                   "Holiday_Comb",	"Tavg_cat",	"Prcp_Total_cat",		"SEA_DESC",	"LOYAL_PER",
+                                   "DIST_ID" #,	"REGN_ID",	"ST_CDE"
+                                   ,"Mobile_Event","KC_Earn_Discount","KC_Redeem_Discount","PCT_25","PCT_30","Associate_Discount",
+                                   "Secret_Sale_Discount","MVC_Discount","Dol_10","Mystery_Discount","Post_XMAS","Pre_XMAS",
+                                   "Post_Blck_Fri_Dec","CYBR_2_WEK","Cyber_Mon","Post_Blck_Fri_Nov","blk_Friday","Pre_thnks",
+                                   "VTRN_DAY","Pre_VTRN","Post_VTRN","CYBR_NOV","CYBR_DEC"
+    )]
+
+ 
+    
+    
+    
+
+##### Random Forest #####
+    train[] <- lapply(train, as.numeric)
+    test[] <- lapply(test, as.numeric)
+    
+    n <- names(train)
+    f <- as.formula(paste("Productivity ~", paste(n[!n %in% "Productivity"], collapse = " + ")))
+
+    modelFit1 <- randomForest(f, data = train)
+    
+    prediction <- predict(modelFit1, test)
+    
+    test$predection <- round(prediction)
+    
+    
+    MSE.rforest <- sum((test$Productivity - test$predection)^2)/nrow(test)
+    
+    RF_pred <- as.data.frame(test$Productivity )
+    RF_pred$predection <- test$predection
+    
+    
+
+    
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
