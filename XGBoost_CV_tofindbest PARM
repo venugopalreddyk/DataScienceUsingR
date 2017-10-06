@@ -1,0 +1,99 @@
+#https://stackoverflow.com/questions/35050846/xgboost-in-r-how-does-xgb-cv-pass-the-optimal-parameters-into-xgb-train
+
+
+best_param = list()
+best_seednumber = 1234
+best_logloss = Inf
+best_logloss_index = 0
+
+EMAPE.xgb <- function(preds, dtrain) {
+  target <- getinfo(dtrain, "label")
+  predicted <- preds
+  etarget<-exp(as.numeric(target))
+  epredicted<-exp(as.numeric(predicted))
+  x1 <- etarget - epredicted
+  x2 <- x1 / etarget
+  x2[etarget==0] <- 0
+  x3 <- abs(x2)
+  x4 <- sum(x3)
+  x5 <- x4/length(etarget)
+  return(list(metric="error", value=x5))
+}
+
+
+
+for (iter in 1:100) {
+  param <- list(objective = "reg:linear",
+                booster   = "gbtree", # "gbtree", #"gblinear", # "dart", #gblinear", #"gbtree",
+                eval_metric = "mae", #mae", #EMAPE.xgb,
+                #num_class = 12,
+                max_depth = sample(5:15, 1),
+                eta = runif(1, .01, .3),
+                gamma = runif(1, 0.0, 0.2), 
+                subsample = runif(1, .6, .9),
+                colsample_bytree = runif(1, .5, .9), 
+                min_child_weight = sample(1:40, 1)
+                #max_delta_step = sample(1:10, 1)
+  )
+  cv.nround = 5000
+  cv.nfold = 5
+  seed.number = sample.int(10000, 1)[[1]]
+  set.seed(seed.number)
+  mdcv <- xgb.cv(data=dtrain, 
+                 #label = log(train$Productivity),
+                 params = param,print_every_n = 1000, #nthread=6, 
+                 nfold=cv.nfold, nrounds=cv.nround,
+                 verbose = T, early_stop_round=12, maximize=FALSE)
+  
+  
+  
+  min_logloss = min(mdcv[[4]]$test_mae_mean)
+  min_logloss_index = which.min(mdcv[[4]]$test_mae_mean)
+  
+  if (min_logloss < best_logloss) {
+    best_logloss = min_logloss
+    best_logloss_index = min_logloss_index
+    best_seednumber = seed.number
+    best_param = param
+  }
+}
+
+nround = best_logloss_index
+set.seed(best_seednumber)
+model_xgb0  <- xgb.train(data=dtrain, params=best_param, nrounds=nround)
+
+
+##### Predicting ####
+# forecasting values based on model selection using all variables of test data excluding Daily sales column
+# Note: test data will have Daily Sales column but the values will be null because we need to forecast Daily sales values for test dataset
+pred1 <- exp(predict(model_xgb0, as.matrix(sapply(test[,feature.names],as.numeric)),missing=NaN))
+
+
+#Below code is comaparing forecasted values with actual values
+##Removing un-necessary columns
+
+test_val<-test[,c("STORE","Year","Month_NM","Day_in_Month","Productivity")]
+
+##Concatenating date based variables to create date
+test_val$Date<- as.Date(paste(test_val$Year,test_val$Month_NM,test_val$Day_in_Month,sep = "-"),format = "%Y-%m-%d")
+
+##Appending forecasted values to dateset 
+test_val$pred<-pred1
+
+test_val$Productivity <- as.numeric(test_val$Productivity)
+
+## Calculating Absolute percentage error for forecasting month
+test_val$APE=abs((test_val$Productivity-test_val$pred)/test_val$Productivity)
+
+MEAPE = mean(test_val$APE) * 100
+
+sqldf("select count(*) from test_val where APE > 0.10")
+sqldf("select count(*) from test_val where APE <= 0.10")
+
+
+# 
+# mat <- xgb.importance (model = model_xgb0)
+# xgb.plot.importance (importance_matrix = mat[1:70]) 
+
+
+
