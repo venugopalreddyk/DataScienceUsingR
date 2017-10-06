@@ -1,0 +1,564 @@
+
+
+##### Load Packages####
+library(readr)
+library(xgboost)
+library(MASS)
+library(shiny)
+library(tools)
+library(lattice)
+library(ggplot2)
+library(shinyFiles)
+library(base)
+library(RODBC)
+library(DT)
+library(shinydashboard)
+library(sqldf)
+library(dplyr)
+#devtools::install_github('rstudio/shiny')
+#library(RJDBC)
+#library(XLConnect)
+#library(lubridate)
+#library(Hmisc)
+#library(timeDate)
+
+#Calling libraries
+library(readr)
+library(chron)
+library(xgboost)
+library(MASS)
+library(RODBC)
+library(RJDBC)
+library(XLConnect)
+library(lubridate)
+library(Hmisc)
+library(timeDate)
+library(gdata)
+library(openxlsx)
+library(sqldf)
+library(dplyr)
+#Enter working directory path 
+
+# use the below options code if you wish to increase the file input limit, in this example file input limit is increased from 5MB to 9MB
+#options(shiny.maxRequestSize = 30*1024^2)
+
+##### Load Data  ####
+rm(list=ls())
+gc()
+
+setwd("C:\\Users\\venugopalak\\Desktop\\NO_SQl\\R Use Case\\X G Boost Model")
+#data <- read.table("C:\\Users\\venugopalak\\Desktop\\NO_SQl\\R Use Case\\X G Boost Model\\Store7.csv",header = TRUE,sep=",");
+
+
+alldata <- read.table(
+  "C:\\Users\\venugopalak\\Desktop\\NO_SQl\\R Use Case\\X G Boost Model\\final_data3.txt",
+  sep="\t", header=TRUE)
+
+alldata <- subset(alldata, select = -c(Total_apps,NET_SALE,KOHLS_CHARGE_TOTAL,TAX_FREE_IND,Snow_cat_1,ST_CDE) )
+
+Fcstmth_FM_ID <- "201708"
+
+set.seed(1234)
+
+date1<-as.Date(03/30/2017,origin="2016-03-30")
+
+data <- sqldf("SELECT * FROM alldata where STORE = 7")
+
+
+##### Outlier Detection #####
+
+outlierKD <- function(dt, var) {
+  var_name <- eval(substitute(var),eval(dt))
+  tot <- sum(!is.na(var_name))
+  na1 <- sum(is.na(var_name))
+  m1 <- mean(var_name, na.rm = T)
+  par(mfrow=c(2, 2), oma=c(0,0,3,0))
+  boxplot(var_name, main="With outliers")
+  hist(var_name, main="With outliers", xlab=NA, ylab=NA)
+  outlier <- boxplot.stats(var_name)$out
+  mo <- mean(outlier)
+  var_name <- ifelse(var_name %in% outlier, NA, var_name)
+  boxplot(var_name, main="Without outliers")
+  hist(var_name, main="Without outliers", xlab=NA, ylab=NA)
+  title("Outlier Check", outer=TRUE)
+  na2 <- sum(is.na(var_name))
+  message("Outliers identified: ", na2 - na1, " from ", tot, " observations")
+  message("Proportion (%) of outliers: ", (na2 - na1) / tot*100)
+  message("Mean of the outliers: ", mo)
+  m2 <- mean(var_name, na.rm = T)
+  message("Mean without removing outliers: ", m1)
+  message("Mean if we remove outliers: ", m2)
+  response <- readline(prompt="Do you want to remove outliers and to replace with NA? [yes/no]: ")
+  if(response == "y" | response == "yes"){
+    dt[as.character(substitute(var))] <- invisible(var_name)
+    assign(as.character(as.list(match.call())$dt), dt, envir = .GlobalEnv)
+    message("Outliers successfully removed", "\n")
+    return(invisible(dt))
+  } else{
+    message("Nothing changed", "\n")
+    return(invisible(var_name))
+  }
+}
+
+data <- outlierKD(data, Productivity)
+data <- outlierKD(data, Productivity)
+data <- outlierKD(data, Productivity)
+
+data$Productivity[is.na(data$Productivity)] <- round(mean(data$Productivity,na.rm = T))
+
+colSums(is.na(data))
+cvData <- sqldf("SELECT * FROM data where Productivity is NULL ")
+data <- sqldf("SELECT * FROM data where Productivity is NOT NULL")
+
+#data <- sqldf("SELECT * FROM data where FSCL_MN_ID <= 201704 ")
+
+train <- sqldf("SELECT * FROM data where FSCL_MN_ID <= 201705 ")
+test <- sqldf("SELECT * FROM data where FSCL_MN_ID > 201705 ")
+
+##### Feature selection #####
+
+# Function created for selecting variables for forecasting fiscal month
+# Selecting variables for Nov month if forecasting month in Nov
+if (as.numeric(substr(Fcstmth_FM_ID, 5, 6))==10){
+  
+  train<-train[,names(train) %in% c("STORE","Year","Month_NM","Day_in_Month","Productivity","Weekend","Day_in_year","Secret_Sale_Event","DOW","KC_Earn_Event","blk_Friday","Tavg_cat","VTRN_DAY","Pre_thnks","TOT_STR_SQ_FTG_QTY","Week_NM")] 
+  train<- train[order(train$STORE,train$Year,train$Month_NM,train$Day_in_Month), ]
+  
+  test<-test[,names(test) %in% c("STORE","Year","Month_NM","Day_in_Month","Productivity","Weekend","Day_in_year","Secret_Sale_Event","DOW","KC_Earn_Event","blk_Friday","Tavg_cat","VTRN_DAY","Pre_thnks","TOT_STR_SQ_FTG_QTY","Week_NM")]
+  test<- test[order(test$STORE,test$Year,test$Month_NM,test$Day_in_Month), ]
+  
+} else {
+  # Selecting variables for Dec month if forecasting month is Dec
+  if (as.numeric(substr(Fcstmth_FM_ID, 5, 6))==11){
+    
+    train<-train[,names(train) %in% c("Year","Month_NM","Day_in_Month","Productivity","STORE","Weekend","Day_in_year","Secret_Sale_Event","DOW","KC_Earn_Event","Tavg_cat","LOYAL_PER","Pre_XMAS","Post_Blck_Fri_Dec","TOT_STR_SQ_FTG_QTY","Week_NM","ST_CDE")]
+    train<- train[order(train$STORE,train$Year,train$Month_NM,train$Day_in_Month), ]
+    
+    test<-test[,names(test) %in% c("Year","Month_NM","Day_in_Month","Productivity","STORE","Weekend","Day_in_year","Secret_Sale_Event","DOW","KC_Earn_Event","Tavg_cat","LOYAL_PER","Pre_XMAS","Post_Blck_Fri_Dec","TOT_STR_SQ_FTG_QTY","Week_NM","ST_CDE")]
+    test<- test[order(test$STORE,test$Year,test$Month_NM,test$Day_in_Month), ]
+    
+  } else {
+    # selecting variables for Jan to Oct if forecasting is from Jan to Oct
+    train<-train[,names(train) %in% c("STORE",	"Productivity",	"KC_Penetration","KC_Earn_Event",	"KC_Redeem_Event",	"LTO_Event",	"Friends_Family_Event",
+                                      "Associate_Event",	"Secret_Sale_Event",	"MVC_Event",	"KC_CASP_Event",	"BC_CASP_Event",	"BC_BMSM_Event",
+                                      "GPO_Dol_OFF_Event",	"GPO_PCT_OFF_Event",	"Digital_Event",	"Email_Event","PCT_10","PCT_15",	"PCT_20",	"PCT_25","PCT_30",
+                                      "Dol_10", "Dol_15",	"DOW",	"Weekend",	"Week_in_Month",	"Sig_week_in_Month",
+                                      "Week_NM",	"Month_NM",	"Day_in_Month",	"No_Days_in_Month",	"Year",	"Day_in_year",
+                                      "Holiday_Comb",	"Tavg_cat",	"Prcp_Total_cat",		"SEA_DESC",	"LOYAL_PER",
+                                      "TOT_STR_SQ_FTG_QTY",	"STR_FMT_CDE",	"DIST_ID",	"REGN_ID",	"PLNG_CTG_TYP_CDE","Post_XMAS","Pre_XMAS","Post_Blck_Fri_Dec","CYBR_2_WEK","Cyber_Mon",   
+                                      "Post_Blck_Fri_Nov","blk_Friday", "Pre_thnks","VTRN_DAY","Pre_VTRN","Post_VTRN",   
+                                      "CYBR_NOV","CYBR_DEC","KC_BMSM_Event","Mobile_Event","KC_Earn_Discount","KC_Redeem_Discount","Associate_Discount","Secret_Sale_Discount","MVC_Discount","Mystery_Discount"
+    )]
+    train<- train[order(train$STORE,train$Year,train$Month_NM,train$Day_in_Month), ]
+    
+    test<-test[,names(test) %in% c("STORE",	"Productivity",	"KC_Penetration","KC_Earn_Event",	"KC_Redeem_Event",	"LTO_Event",	"Friends_Family_Event",
+                                   "Associate_Event",	"Secret_Sale_Event",	"MVC_Event",	"KC_CASP_Event",	"BC_CASP_Event",	"BC_BMSM_Event",
+                                   "GPO_Dol_OFF_Event",	"GPO_PCT_OFF_Event",	"Digital_Event",	"Email_Event","PCT_10","PCT_15",	"PCT_20",	"PCT_25","PCT_30",
+                                   "Dol_10", "Dol_15",	"DOW",	"Weekend",	"Week_in_Month",	"Sig_week_in_Month",
+                                   "Week_NM",	"Month_NM",	"Day_in_Month",	"No_Days_in_Month",	"Year",	"Day_in_year",
+                                   "Holiday_Comb",	"Tavg_cat",	"Prcp_Total_cat",		"SEA_DESC",	"LOYAL_PER",
+                                   "TOT_STR_SQ_FTG_QTY",	"STR_FMT_CDE",	"DIST_ID",	"REGN_ID",	"PLNG_CTG_TYP_CDE","Post_XMAS","Pre_XMAS","Post_Blck_Fri_Dec","CYBR_2_WEK","Cyber_Mon",   
+                                   "Post_Blck_Fri_Nov","blk_Friday", "Pre_thnks","VTRN_DAY","Pre_VTRN","Post_VTRN",   
+                                   "CYBR_NOV","CYBR_DEC","KC_BMSM_Event","Mobile_Event","KC_Earn_Discount","KC_Redeem_Discount","Associate_Discount","Secret_Sale_Discount","MVC_Discount","Mystery_Discount"
+    )]
+    test<- test[order(test$STORE,test$Year,test$Month_NM,test$Day_in_Month), ]
+  }
+}
+
+##### INTO FACTORs and Numerics #####
+
+#Creating an R object for model execution where it has all vaiables excluding Daily sales 
+feature.names <- names(train[,!names(train)%in% c("Productivity")])
+
+
+train$Productivity <- as.numeric(train$Productivity)
+test$Productivity <- as.numeric(test$Productivity)
+
+train$KC_Penetration <- as.numeric(train$KC_Penetration)
+test$KC_Penetration <- as.numeric(test$KC_Penetration)
+
+
+
+test$KC_Earn_Event<-as.factor(test$KC_Earn_Event)
+test$KC_Redeem_Event<-as.factor(test$KC_Redeem_Event)
+test$LTO_Event<-as.factor(test$LTO_Event)
+test$Friends_Family_Event<-as.factor(test$Friends_Family_Event)
+test$Associate_Event<-as.factor(test$Associate_Event)
+test$Secret_Sale_Event<-as.factor(test$Secret_Sale_Event)
+test$MVC_Event<-as.factor(test$MVC_Event)
+test$KC_CASP_Event<-as.factor(test$KC_CASP_Event)
+test$BC_CASP_Event<-as.factor(test$BC_CASP_Event)
+test$BC_BMSM_Event<-as.factor(test$BC_BMSM_Event)
+test$GPO_Dol_OFF_Event<-as.factor(test$GPO_Dol_OFF_Event)
+test$GPO_PCT_OFF_Event<-as.factor(test$GPO_PCT_OFF_Event)
+test$Digital_Event<-as.factor(test$Digital_Event)
+test$Email_Event<-as.factor(test$Email_Event)
+test$PCT_15<-as.factor(test$PCT_15)
+test$PCT_20<-as.factor(test$PCT_20)
+test$Dol_15<-as.factor(test$Dol_15)
+test$DOW<-as.factor(test$DOW)
+test$Weekend<-as.factor(test$Weekend)
+test$Week_in_Month<-as.factor(test$Week_in_Month)
+test$Sig_week_in_Month<-as.factor(test$Sig_week_in_Month)
+test$Week_NM<-as.factor(test$Week_NM)
+#test$Month_NM<-as.factor(test$Month_NM)
+test$Day_in_Month<-as.factor(test$Day_in_Month)
+test$No_Days_in_Month<-as.factor(test$No_Days_in_Month)
+#test$Year<-as.factor(test$Year)
+test$Day_in_year<-as.numeric(test$Day_in_year)
+test$Holiday_Comb<-as.factor(test$Holiday_Comb)
+test$Tavg_cat<-as.factor(test$Tavg_cat)
+test$Prcp_Total_cat<-as.factor(test$Prcp_Total_cat)
+test$SEA_DESC<-as.factor(test$SEA_DESC)
+test$LOYAL_PER<-as.numeric(test$LOYAL_PER)
+test$STR_FMT_CDE<-as.factor(test$STR_FMT_CDE)
+test$DIST_ID<-as.factor(test$DIST_ID)
+test$REGN_ID<-as.factor(test$REGN_ID)
+test$PLNG_CTG_TYP_CDE<-as.factor(test$PLNG_CTG_TYP_CDE)
+#test$ST_CDE<-as.factor(test$ST_CDE)
+test$KC_BMSM_Event<-as.factor(test$KC_BMSM_Event)
+test$Mobile_Event<-as.factor(test$Mobile_Event)
+test$KC_Earn_Discount<-as.factor(test$KC_Earn_Discount)
+test$KC_Redeem_Discount<-as.factor(test$KC_Redeem_Discount)
+test$PCT_10 <-as.factor(test$PCT_10 )
+test$PCT_25<-as.factor(test$PCT_25)
+test$PCT_30 <-as.factor(test$PCT_30 )
+test$Associate_Discount<-as.factor(test$Associate_Discount)
+test$Secret_Sale_Discount<-as.factor(test$Secret_Sale_Discount)
+test$MVC_Discount<-as.factor(test$MVC_Discount)
+test$Dol_10<-as.factor(test$Dol_10)
+test$Mystery_Discount<-as.factor(test$Mystery_Discount)
+
+test$Post_XMAS<-as.factor(test$Post_XMAS)
+test$Pre_XMAS<-as.factor(test$Pre_XMAS)
+test$Post_Blck_Fri_Dec<-as.factor(test$Post_Blck_Fri_Dec)
+test$CYBR_2_WEK<-as.factor(test$CYBR_2_WEK)
+test$Cyber_Mon<-as.factor(test$Cyber_Mon)
+test$Post_Blck_Fri_Nov<-as.factor(test$Post_Blck_Fri_Nov)
+test$blk_Friday<-as.factor(test$blk_Friday)
+test$Pre_thnks<-as.factor(test$Pre_thnks)
+test$VTRN_DAY<-as.factor(test$VTRN_DAY)
+test$Pre_VTRN<-as.factor(test$Pre_VTRN)
+test$Post_VTRN<-as.factor(test$Post_VTRN)
+test$CYBR_NOV<-as.factor(test$CYBR_NOV)
+test$CYBR_DEC<-as.factor(test$CYBR_DEC)
+#test$Month_NM<-as.factor(test$Month_NM)
+test$STORE<-as.numeric(test$STORE)
+
+
+train$KC_Earn_Event<-as.factor(train$KC_Earn_Event)
+train$KC_Redeem_Event<-as.factor(train$KC_Redeem_Event)
+train$LTO_Event<-as.factor(train$LTO_Event)
+train$Friends_Family_Event<-as.factor(train$Friends_Family_Event)
+train$Associate_Event<-as.factor(train$Associate_Event)
+train$Secret_Sale_Event<-as.factor(train$Secret_Sale_Event)
+train$MVC_Event<-as.factor(train$MVC_Event)
+train$KC_CASP_Event<-as.factor(train$KC_CASP_Event)
+train$BC_CASP_Event<-as.factor(train$BC_CASP_Event)
+train$BC_BMSM_Event<-as.factor(train$BC_BMSM_Event)
+train$GPO_Dol_OFF_Event<-as.factor(train$GPO_Dol_OFF_Event)
+train$GPO_PCT_OFF_Event<-as.factor(train$GPO_PCT_OFF_Event)
+train$Digital_Event<-as.factor(train$Digital_Event)
+train$Email_Event<-as.factor(train$Email_Event)
+train$PCT_15<-as.factor(train$PCT_15)
+train$PCT_20<-as.factor(train$PCT_20)
+train$Dol_15<-as.factor(train$Dol_15)
+train$DOW<-as.factor(train$DOW)
+train$Weekend<-as.factor(train$Weekend)
+train$Week_in_Month<-as.factor(train$Week_in_Month)
+train$Sig_week_in_Month<-as.factor(train$Sig_week_in_Month)
+train$Week_NM<-as.factor(train$Week_NM)
+#train$Month_NM<-as.factor(train$Month_NM)
+train$Day_in_Month<-as.factor(train$Day_in_Month)
+train$No_Days_in_Month<-as.factor(train$No_Days_in_Month)
+#train$Year<-as.factor(train$Year)
+train$Day_in_year<-as.numeric(train$Day_in_year)
+train$Holiday_Comb<-as.factor(train$Holiday_Comb)
+train$Tavg_cat<-as.factor(train$Tavg_cat)
+train$Prcp_Total_cat<-as.factor(train$Prcp_Total_cat)
+train$SEA_DESC<-as.factor(train$SEA_DESC)
+train$LOYAL_PER<-as.numeric(train$LOYAL_PER)
+train$STR_FMT_CDE<-as.factor(train$STR_FMT_CDE)
+train$DIST_ID<-as.factor(train$DIST_ID)
+train$REGN_ID<-as.factor(train$REGN_ID)
+train$PLNG_CTG_TYP_CDE<-as.factor(train$PLNG_CTG_TYP_CDE)
+#train$ST_CDE<-as.factor(train$ST_CDE)
+train$KC_BMSM_Event<-as.factor(train$KC_BMSM_Event)
+train$Mobile_Event<-as.factor(train$Mobile_Event)
+train$KC_Earn_Discount<-as.factor(train$KC_Earn_Discount)
+train$KC_Redeem_Discount<-as.factor(train$KC_Redeem_Discount)
+train$PCT_10 <-as.factor(train$PCT_10 )
+train$PCT_25<-as.factor(train$PCT_25)
+train$PCT_30 <-as.factor(train$PCT_30 )
+train$Associate_Discount<-as.factor(train$Associate_Discount)
+train$Secret_Sale_Discount<-as.factor(train$Secret_Sale_Discount)
+train$MVC_Discount<-as.factor(train$MVC_Discount)
+train$Dol_10<-as.factor(train$Dol_10)
+train$Mystery_Discount<-as.factor(train$Mystery_Discount)
+
+train$Post_XMAS<-as.factor(train$Post_XMAS)
+train$Pre_XMAS<-as.factor(train$Pre_XMAS)
+train$Post_Blck_Fri_Dec<-as.factor(train$Post_Blck_Fri_Dec)
+train$CYBR_2_WEK<-as.factor(train$CYBR_2_WEK)
+train$Cyber_Mon<-as.factor(train$Cyber_Mon)
+train$Post_Blck_Fri_Nov<-as.factor(train$Post_Blck_Fri_Nov)
+train$blk_Friday<-as.factor(train$blk_Friday)
+train$Pre_thnks<-as.factor(train$Pre_thnks)
+train$VTRN_DAY<-as.factor(train$VTRN_DAY)
+train$Pre_VTRN<-as.factor(train$Pre_VTRN)
+train$Post_VTRN<-as.factor(train$Post_VTRN)
+train$CYBR_NOV<-as.factor(train$CYBR_NOV)
+train$CYBR_DEC<-as.factor(train$CYBR_DEC)
+train$Month_NM<-as.factor(train$Month_NM)
+train$STORE<-as.numeric(train$STORE)
+
+
+str(train)
+
+##### Data Cleansing #####
+
+train <- train %>%
+  mutate(Prcp_Total_cat= ifelse(is.na(Prcp_Total_cat),tail(names(sort(table(train$Prcp_Total_cat))), 1),Prcp_Total_cat))
+
+train <- train %>%
+  mutate(Tavg_cat = ifelse(is.na(Tavg_cat),tail(names(sort(table(train$Tavg_cat))), 1),Tavg_cat))
+
+train <- train %>%
+  mutate(Productivity = ifelse(is.na(Productivity),tail(names(sort(table(train$Productivity))), 1),Productivity))
+
+
+#LOYAL_PER
+# train <- train %>%
+#   mutate(Snow_cat_1 = ifelse(is.na(Snow_cat_1),tail(names(sort(table(train$Snow_cat_1))), 1),Snow_cat_1))
+
+
+test <- test %>%
+  mutate(Prcp_Total_cat= ifelse(is.na(Prcp_Total_cat),tail(names(sort(table(test$Prcp_Total_cat))), 1),Prcp_Total_cat))
+
+test <- test %>%
+  mutate(Tavg_cat = ifelse(is.na(Tavg_cat),tail(names(sort(table(test$Tavg_cat))), 1),Tavg_cat))
+
+
+test <- test %>%
+  mutate(Productivity = ifelse(is.na(Productivity),tail(names(sort(table(test$Productivity))), 1),Productivity))
+
+
+#apply(data,2,function(x) sum(is.na(x)))
+
+#assuming text variables are categorical & function created to replacing them with numeric ids for model execution 
+
+for (f in feature.names) {
+  if (class(train[[f]])=="character") {
+    levels <- unique(c(train[[f]], test[[f]]))
+    train[[f]] <- as.integer(factor(train[[f]], levels=levels))
+    test[[f]]  <- as.integer(factor(test[[f]],  levels=levels))
+  }
+}
+
+rownames(train)<-c() #Re-setting rowindex after final data prepared
+rownames(test)<-c() #Re-setting rowindex after final data prepared
+
+tra<-train[,feature.names] # Selecting all variables only excluding Daily sales variable for model execution
+
+##### Standadise train data for XGboost #####
+#function made for creating dateset which accepts XGBoost model 
+##creating dataset for XGBoost model of Nov if forecasting month is Nov
+
+#tra[] <- lapply(tra, as.numeric)
+
+#apply(data,2,function(x) sum(is.na(x)))
+train$Productivity<- as.numeric(train$Productivity)
+if (as.numeric(substr(Fcstmth_FM_ID, 5, 6))==10 ){
+  dtrain.new<-xgb.DMatrix(data=data.matrix(sapply(tra,as.numeric)),label=log(train$Productivity),missing=NaN)
+  
+} else {
+  
+  ##creating dataset for XGBoost model of Dec if forecasting month is Dec
+  if (as.numeric(substr(Fcstmth_FM_ID, 5, 6))==11){
+    dtrain.new<-xgb.DMatrix(data=data.matrix(sapply(tra,as.numeric)),label=log(train$Productivity),missing=NaN)
+    
+  } else {
+    
+    ##creating datasets for XGBoost model for Jan to Oct if forecasting month from Jan to Oct   
+    h<-as.numeric(rownames(train[unlist(tapply(rownames(train), train$STORE, tail,  42)), ]))
+    dval<-xgb.DMatrix(data=data.matrix(sapply(tra[h,],as.numeric)),label=log(abs(train$Productivity ))[h],missing=NaN)
+    dtrain<-xgb.DMatrix(data=data.matrix(sapply(tra[-h,],as.numeric)),label=log(abs(train$Productivity))[-h],missing=NaN)
+    watchlist<-list(val=dval,train=dtrain) 
+  }
+}
+
+
+#dtrain<-xgb.DMatrix(data=data.matrix(sapply(tra,as.numeric)),label=log(abs(train$Productivity)),missing=NaN)
+
+
+#Evaluation metric used for improving model accuracy
+EMAPE.xgb <- function(preds, dtrain) {
+  target <- getinfo(dtrain, "label")
+  predicted <- preds
+  etarget<-exp(as.numeric(target))
+  epredicted<-exp(as.numeric(predicted))
+  x1 <- etarget - epredicted
+  x2 <- x1 / etarget
+  x2[etarget==0] <- 0
+  x3 <- abs(x2)
+  x4 <- sum(x3)
+  x5 <- x4/length(etarget)
+  return(list(metric="error", value=x5))
+}
+
+##### Model execution part#####
+
+# Selecting model parameters and running model of Nov if forecasting month is Nov
+if (as.numeric(substr(Fcstmth_FM_ID, 5, 6))==10 ){
+  print("one1")
+  cv.nround <- 10000
+  cv.nfold <- 5
+  set.seed(1234)
+  
+  param <- list(  objective           = "reg:linear", 
+                  booster             = "gbtree",
+                  eta                 = 0.02,
+                  max_depth           = 8,  
+                  subsample           = 1,
+                  colsample_bytree    = 1,
+                  eval_metric         = EMAPE.xgb
+                  
+  )
+  
+  bst.cv = xgb.cv(param=param, data = data.matrix(sapply(tra,as.numeric)), label = log(abs(train$Productivity)), 
+                  nfold = cv.nfold, nrounds = cv.nround,print_every_n = 1000,missing=NaN)
+  
+  set.seed(1234)
+  
+  model_xgb <- xgb.train(   params              = param, 
+                            data                = dtrain.new, 
+                            nrounds             = 5000,
+                            verbose             = 1, 
+                            maximize            = FALSE,
+                            print_every_n       = 100
+                            
+  )
+  
+} else {
+  # Selecting model parameters and running model of Dec if forecasting month is DEC 
+  if (as.numeric(substr(Fcstmth_FM_ID, 5, 6))==11){
+    print("Two2")
+    cv.nround <- 5000
+    cv.nfold <- 4
+    set.seed(1234)
+    
+    param <- list(  objective           = "reg:linear", 
+                    booster             = "gbtree",
+                    eta                 = 0.02,
+                    max_depth           = 8,  
+                    subsample           = 1,
+                    colsample_bytree    = 0.6,
+                    eval_metric         = EMAPE.xgb
+                    
+    )
+    
+    bst.cv = xgb.cv(param=param, data = data.matrix(tra), label = log(abs(train$Productivity)), 
+                    nfold = cv.nfold, nrounds = cv.nround,print_every_n = 1000,missing=NaN)
+    
+    set.seed(1234)
+    
+    model_xgb <- xgb.train(   params              = param, 
+                              data                = dtrain.new, 
+                              nrounds             = 5000,
+                              verbose             = 1, 
+                              maximize            = FALSE,
+                              print_every_n       = 100
+                              
+    )
+    
+  } else {
+    #For forecasting months between Jan to Oct
+    #Selecting model parameter of all months excluding Feb and May if forecasting months are not equal to Feb and May 
+    if (as.numeric(substr(Fcstmth_FM_ID, 5, 6)) %in% c(6,5,2,9,8,3,7,12)){
+      print("Three3")
+      param <- list(  objective           = "reg:linear", 
+                      booster             = "gbtree",
+                      eta                 = 0.0187,#Lower eta leads to slower computation
+                      max_depth           = 13,  # changed from default of 6
+                      gamma               = 0,
+                      subsample           = 0.86,
+                      colsample_bytree    = 0.68,
+                      min_child_weight    = 40,
+                      eval_metric         = EMAPE.xgb             
+      )
+    } else {
+      
+      #Selecting model parameter for Feb if forecasting month is Feb
+      if (as.numeric(substr(Fcstmth_FM_ID, 5, 6))==1){
+        
+        param <- list(  objective           = "reg:linear", 
+                        booster             = "gbtree",
+                        eta                 = 0.2,
+                        max_depth           = 15,  
+                        min_child_weight    = 20,
+                        gamma=0.1,
+                        subsample           = 0.5,
+                        colsample_bytree    = 0.5,
+                        eval_metric         = EMAPE.xgb
+                        
+        )
+        
+      } else {
+        #selecting model parameter for May if forecasting month is May
+        param <- list(  objective           = "reg:linear", 
+                        booster             = "gbtree",
+                        eta                 = 0.03,
+                        max_depth           = 12,  
+                        subsample           = 0.6,
+                        colsample_bytree    = 1,
+                        eval_metric         = EMAPE.xgb
+                        
+        )
+      }
+    }
+    ##Running model for Jan to Oct if forecasting month from Jan to Oct
+    model_xgb <- xgb.train(   params              = param, 
+                              data                = dtrain, 
+                              nrounds             = 2500,
+                              verbose             = 1, 
+                              early_stop_round    = 100,
+                              watchlist           = watchlist,
+                              maximize            = FALSE,
+                              print_every_n       = 1000
+                              
+    )
+    
+  }
+}
+
+##### Predicting ####
+# forecasting values based on model selection using all variables of test data excluding Daily sales column
+# Note: test data will have Daily Sales column but the values will be null because we need to forecast Daily sales values for test dataset
+test[] <- lapply(test, as.numeric)
+#apply(test,2,function(x) sum(is.na(x)))
+pred1 <- exp(predict(model_xgb, as.matrix(sapply(test[,feature.names],as.numeric)),missing=NaN))
+
+#Below code is comaparing forecasted values with actual values
+##Removing un-necessary columns
+test_val<-test[,c("STORE","Year","Month_NM","Day_in_Month","Productivity")]
+
+##Concatenating date based variables to create date
+test_val$Date<- as.Date(paste(test_val$Year,test_val$Month_NM,test_val$Day_in_Month,sep = "-"),format = "%Y-%m-%d")
+
+##Appending forecasted values to dateset 
+test_val$pred<-pred1
+test_val$Productivity <- as.numeric(test_val$Productivity)
+
+## Calculating Absolute percentage error for forecasting month
+test_val$APE=abs(test_val$Productivity-test_val$pred)/abs(test_val$Productivity)
+
+
+MEAPE = mean(test_val$APE) * 100
+
+sqldf("select count(*) from test_val where APE > 0.10")
+sqldf("select count(*) from test_val where APE <= 0.10")
+
+# mat <- xgb.importance (model = model_xgb)
+# xgb.plot.importance (importance_matrix = mat[1:70]) 
+
+
