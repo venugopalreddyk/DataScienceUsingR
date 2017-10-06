@@ -1,0 +1,100 @@
+
+
+library(sqldf)
+library("tseries", lib.loc="~/R/win-library/3.4")
+library(fma)
+
+##### Load Data  ####
+rm(list=ls())
+gc()
+
+setwd("C:\\Users\\venugopalak\\Desktop\\NO_SQl\\R Use Case\\X G Boost Model")
+#data <- read.table("C:\\Users\\venugopalak\\Desktop\\NO_SQl\\R Use Case\\X G Boost Model\\Store7.csv",header = TRUE,sep=",");
+
+
+alldata <- read.table(
+  "C:\\Users\\venugopalak\\Desktop\\NO_SQl\\R Use Case\\X G Boost Model\\final_data3.txt",
+  sep="\t", header=TRUE)
+
+alldata <- subset(alldata, select = -c(Total_apps,NET_SALE,KOHLS_CHARGE_TOTAL,TAX_FREE_IND,Snow_cat_1,ST_CDE) )
+
+
+set.seed(1234)
+
+
+data <- sqldf("SELECT * FROM alldata where STORE = 7")
+
+timedata <- sqldf("SELECT DATE,sum(Productivity) as Productivity FROM data GROUP BY DATE ")
+
+timedata$DATE <- as.Date(timedata$DATE, "%d%B%Y"); 
+
+timedata <- sqldf("SELECT * FROM timedata ORDER BY DATE")
+
+tsdata <- timedata$Productivity
+
+
+myts2 <- window(tsdata, frequency=365.25 ,start=c(as.Date(as.character("2014-05-04")))) 
+
+
+timeSeriesObj = ts(tsdata,start=c(2014,05,04),frequency=365.25)
+plot.ts(timeSeriesObj)
+
+ets(tsdata)
+fit <- tbats(tsdata)
+seasonal <- !is.null(fit$seasonal)
+seasonal # False
+
+fit1 <- ets(tsdata)
+fit2 <- ets(tsdata,model="ANN")
+
+deviance <- 2*c(logLik(fit1) - logLik(fit2))
+df <- attributes(logLik(fit1))$df - attributes(logLik(fit2))$df 
+#P value
+1-pchisq(deviance,df) # is 0 so False
+
+# Date Starts form 2014-05-04
+
+
+fc <- forecast(timeSeriesObj)
+plot(fc)
+decompose_timeSeriesObj <- decompose(timeSeriesObj)
+plot(decompose_timeSeriesObj)
+
+
+# y <- msts(timedata, seasonal.periods=c(7,365.25))
+# fit <- tbats(y)
+# fc <- forecast(fit)
+# plot(fc)
+
+#______________________________
+fit <- auto.arima(tsdata)
+pred <- forecast(fit, h=300)
+plot(pred)
+
+
+x = ts(tsdata, freq=7, start=c(3,2))
+#______________________________
+seas1 <- fourier(x, K=2)
+seas2 <- fourier(ts(x,freq=7*52), K=2)
+fit <- auto.arima(x, xreg=cbind(seas1,seas2))
+
+seas1.f <- fourierf(x, K=2, h=7*52)
+seas2.f <- fourierf(ts(x,freq=7*52), K=2, h=7*52)
+fc1 <- forecast(fit, xreg=cbind(seas1.f, seas2.f))
+plot(fc1)
+
+#______________________________
+y <- ts(x, frequency=7)
+z <- fourier(ts(x, frequency=365.25), K=5)
+zf <- fourier(ts(x, frequency=365.25), K=5, h=100)
+fit <- auto.arima(y, xreg=cbind(z,holiday), seasonal=FALSE)
+fc <- forecast(fit, xreg=cbind(zf,holidayf), h=100)
+
+#______________________________
+library(forecast)
+x.msts <- msts(x,seasonal.periods=c(7,365.25))
+model <- tbats(x.msts)
+plot(forecast(model,h=100))
+#______________________________
+
+
